@@ -1,117 +1,114 @@
-from fastapi import FastAPI, Query, HTTPException, status, Path
+from fastapi import FastAPI, Query, HTTPException, status, Path, Depends
 from fastapi.responses import JSONResponse
 from typing import Optional
-from schema import CostCreateSchema, CostUpdateSchema
+from core.schema import CostCreateSchema, CostUpdateSchema
+from core.models import get_db, Expense
+from core.database import engine
+from sqlalchemy.orm import Session
+
 
 app = FastAPI()
 
-# for test
-expenses_db = {
-    1: {
-        'id' : 1,
-        'description' : 'a simple text',
-        'amount' : 4
 
-    }
-}
 
 # Create
 @app.post('/expenses')
-def new_cost(payload: CostCreateSchema):
+def new_cost(payload: CostCreateSchema, db : Session = Depends(get_db)):
+    new_expense = Expense(**payload.model_dump())
 
-    new_id = max(expenses_db.keys()) + 1 if expenses_db else 1
+    db.add(new_expense)
+    db.commit()
+    db.refresh(new_expense)
 
-    new_expense = {
-        'id' : new_id,
-        'description' : payload.description,
-        'amount' : payload.amount
-    }
-
-    expenses_db[new_id] = new_expense
-
+    
     return JSONResponse(
-        content=new_expense,
-        status_code=status.HTTP_201_CREATED
+        content={
+            'id' : new_expense.id,
+            'description' : new_expense.description,
+            'amount' : new_expense.amount
+        },
+        status_code=status.HTTP_200_OK
     )
 
 # Read
 @app.get('/expenses')
-def get_expenses(description: Optional[str] = None):
-
+def get_expenses(description: Optional[str] = None, db : Session = Depends(get_db)):
     if description:
-        result = [
-            cost for cost in expenses_db.values()
-            if description in cost['description']
-        ]
+        result = db.query(Expense).filter(Expense.description.ilike(f'%{description}%')).all()
 
-        if not result:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No expense found"
-            )
-
-        return JSONResponse(
-            content=result,
-            status_code=status.HTTP_200_OK
-        )
+    else :
+        result = db.query(Expense).all()
 
     return JSONResponse(
-        content=list(expenses_db.values()),
+        content=[
+            {
+                'id' : expense.id,
+                'description' : expense.description,
+                'amount' : expense.amount
+            }
+
+            for expense in result
+        ],
         status_code=status.HTTP_200_OK
     )
+
 
 # Read one expense
 @app.get('/expenses/{expense_id}')
-def get_expense(expense_id: int):
+def get_expense(expense_id: int, db : Session = Depends(get_db)):
+    expense = db.query(Expense).filter(Expense.id == expense_id).one_or_none()
 
-    if expense_id in expenses_db:
-        return JSONResponse(
-            content=expenses_db[expense_id],
-            status_code=status.HTTP_200_OK
-        )
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Expense with id {expense_id} not found"
-    )
-
-
-# Update
-@app.put('/expenses/{expense_id}')
-def update_expense(expense_id: int, payload : CostUpdateSchema):
-
-    if expense_id not in expenses_db:
+    if not expense:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Expense with id {expense_id} not found"
+            detail='Expense not found'
         )
-
-    update_data = payload.model_dump(exclude_unset=True)
-
-    for key, value in update_data.items():
-        expenses_db[expense_id][key] = value
-
-    return JSONResponse(
-        content=expenses_db[expense_id],
-        status_code=status.HTTP_200_OK
-    )
-
-# Delete
-@app.delete('/expenses/{expense_id}')
-def delete_expense(expense_id: int):
-
-    if expense_id not in expenses_db:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Expense with id {expense_id} not found"
-        )
-
-    deleted_expense = expenses_db.pop(expense_id)
 
     return JSONResponse(
         content={
-            "message": "Expense deleted successfully",
-            "expense": deleted_expense
+            'id' : expense.id,
+            'description' : expense.description,
+            'amount' : expense.amount
         },
         status_code=status.HTTP_200_OK
+    )
+
+# Update
+@app.put('/expenses/{expense_id}')
+def update_expense(expense_id: int, payload : CostUpdateSchema, db : Session = Depends(get_db)):
+    expense = db.query(Expense).filter(Expense.id==expense_id).first()
+
+    if not expense:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='there is no record like that'
+        )
+    
+    expense.description = payload.description
+    expense.amount = payload.amount
+    
+    db.commit()
+
+    db.refresh(expense)
+    return expense
+
+# Delete
+@app.delete('/expenses/{expense_id}')
+def delete_expense(expense_id: int, db : Session = Depends(get_db)):
+    expense = db.query(Expense).filter(Expense.id==expense_id).first()
+
+    if not expense:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='there is no record like that'
+        )
+
+    db.delete(expense)
+    db.commit()
+
+    return JSONResponse(
+        content= {
+            'message' : 'Expense deleted successfully'
+        },
+        status_code=status.HTTP_204_NO_CONTENT
     )
